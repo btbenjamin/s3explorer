@@ -57,6 +57,13 @@ const listRequestSchema = z.object({
   cursor: z.string().optional(),
 })
 
+const paginatedListSchema = z.object({
+  prefix: z.string().optional(),
+  foldersPage: z.number().int().positive().default(1),
+  filesPage: z.number().int().positive().default(1),
+  itemsPerPage: z.number().int().positive().max(50).default(10),
+})
+
 export const listObjects = createServerFn({ method: 'GET' })
   .inputValidator((input: unknown) => listRequestSchema.parse(input))
   .handler(async ({ data }) => {
@@ -93,6 +100,80 @@ export const listObjects = createServerFn({ method: 'GET' })
       prefix,
       objects,
       folders,
+      isTruncated: Boolean(response.IsTruncated),
+      nextCursor: response.NextContinuationToken ?? null,
+    }
+  })
+
+export const listObjectsPaginated = createServerFn({ method: 'GET' })
+  .inputValidator((input: unknown) => paginatedListSchema.parse(input))
+  .handler(async ({ data }) => {
+    const prefix = normalizePrefix(data.prefix)
+    
+    // Récupérer tous les éléments du niveau courant pour pouvoir les paginer
+    // Note: Pour une vraie optimisation, on pourrait implémenter une stratégie de cache
+    const response = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: env.S3_BUCKET,
+        Prefix: prefix || undefined,
+        Delimiter: '/',
+        MaxKeys: 1000, // Limite raisonnable pour éviter les timeouts
+      }),
+    )
+
+    // Traitement des objets (fichiers)
+    const allObjects = safeMapObjects(response.Contents)
+      .sort((a, b) => {
+        if (!a.lastModified && !b.lastModified) return 0
+        if (!a.lastModified) return 1
+        if (!b.lastModified) return -1
+        return a.lastModified > b.lastModified ? -1 : 1
+      })
+
+    // Traitement des dossiers
+    const allFolders = (response.CommonPrefixes ?? [])
+      .map((entry) => entry.Prefix?.replace(prefix, '') ?? '')
+      .filter((name) => Boolean(name) && name !== prefix)
+      .map((name) => ({
+        name: name.replace(/\/$/, ''),
+        prefix: `${prefix}${name}`,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+
+    // Pagination des dossiers
+    const foldersStartIndex = (data.foldersPage - 1) * data.itemsPerPage
+    const foldersEndIndex = foldersStartIndex + data.itemsPerPage
+    const paginatedFolders = allFolders.slice(foldersStartIndex, foldersEndIndex)
+    const totalFoldersPages = Math.ceil(allFolders.length / data.itemsPerPage)
+
+    // Pagination des fichiers
+    const filesStartIndex = (data.filesPage - 1) * data.itemsPerPage
+    const filesEndIndex = filesStartIndex + data.itemsPerPage
+    const paginatedObjects = allObjects.slice(filesStartIndex, filesEndIndex)
+    const totalFilesPages = Math.ceil(allObjects.length / data.itemsPerPage)
+
+    return {
+      prefix,
+      objects: paginatedObjects,
+      folders: paginatedFolders,
+      pagination: {
+        folders: {
+          currentPage: data.foldersPage,
+          totalPages: totalFoldersPages,
+          totalItems: allFolders.length,
+          itemsPerPage: data.itemsPerPage,
+          hasNextPage: data.foldersPage < totalFoldersPages,
+          hasPrevPage: data.foldersPage > 1,
+        },
+        files: {
+          currentPage: data.filesPage,
+          totalPages: totalFilesPages,
+          totalItems: allObjects.length,
+          itemsPerPage: data.itemsPerPage,
+          hasNextPage: data.filesPage < totalFilesPages,
+          hasPrevPage: data.filesPage > 1,
+        },
+      },
       isTruncated: Boolean(response.IsTruncated),
       nextCursor: response.NextContinuationToken ?? null,
     }

@@ -18,6 +18,27 @@ export type ExplorerResponse = {
   nextCursor: string | null
 }
 
+export type PaginationInfo = {
+  currentPage: number
+  totalPages: number
+  totalItems: number
+  itemsPerPage: number
+  hasNextPage: boolean
+  hasPrevPage: boolean
+}
+
+export type PaginatedExplorerResponse = {
+  prefix: string
+  objects: ObjectSummary[]
+  folders: FolderSummary[]
+  pagination: {
+    folders: PaginationInfo
+    files: PaginationInfo
+  }
+  isTruncated: boolean
+  nextCursor: string | null
+}
+
 export type ObjectAccess = {
   key: string
   signedUrl: string
